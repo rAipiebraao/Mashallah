@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { AIResponse } from "@/types/api";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -48,6 +49,7 @@ interface Message {
     quantumEnhanced?: boolean;
   };
   timestamp: Date;
+  status?: 'pending' | 'complete' | 'error';
 }
 
 interface ProviderStatus {
@@ -102,41 +104,46 @@ export default function UltraQueenAI() {
   };
 
   const chatMutation = useMutation({
-    mutationFn: async (data: any) => {
-      return apiRequest('/api/ultra-ai/chat', {
+    mutationFn: async (data: any): Promise<AIResponse> => {
+      const response = await fetch('/api/ultra-ai/chat', {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify(data)
       });
+      return response.json();
     },
-    onSuccess: (data) => {
-      if (data.success) {
+    onSuccess: (apiResponse: AIResponse) => {
+      if (apiResponse.success) {
         const assistantMessage: Message = {
           id: Date.now().toString(),
           role: 'assistant',
-          content: data.content,
-          provider: data.provider,
-          metadata: data.metadata,
-          timestamp: new Date()
+          content: apiResponse.content || '',
+          provider: apiResponse.provider as AIProvider,
+          metadata: apiResponse.metadata,
+          timestamp: new Date(),
+          status: 'complete'
         };
         setMessages(prev => [...prev, assistantMessage]);
         
         // Voice output if enabled
-        if (voiceEnabled && data.content) {
-          speak(data.content);
+        if (voiceEnabled && apiResponse.content) {
+          speak(apiResponse.content);
         }
 
         // Show provider comparison if available
-        if (data.providers && data.providers.length > 0) {
+        if (apiResponse.providers && apiResponse.providers.length > 0) {
           toast({
             title: "Provider Comparison Complete",
-            description: `${data.providers.length} providers analyzed`,
+            description: `${apiResponse.providers.length} providers analyzed`,
             duration: 5000,
           });
         }
       } else {
         toast({
           title: "Error",
-          description: data.error || "Failed to get response",
+          description: apiResponse.error || "Failed to get response",
           variant: "destructive"
         });
       }
@@ -508,7 +515,7 @@ export default function UltraQueenAI() {
                           }
                         }}
                         placeholder="Ask anything... I have unlimited capabilities"
-                        className="min-h-[60px] bg-[var(--queen-gray)] border-[var(--queen-gold)]/30 text-[var(--queen-gold-light)] placeholder-[var(--queen-gold-light)]/50 pr-20">
+                        className="min-h-[60px] bg-[var(--queen-gray)] border-[var(--queen-gold)]/30 text-[var(--queen-gold-light)] placeholder-[var(--queen-gold-light)]/50 pr-20"
                       />
                       <div className="absolute right-2 top-2 flex gap-1">
                         <Button

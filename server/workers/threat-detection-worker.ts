@@ -1,7 +1,12 @@
 /**
  * Threat Detection Worker
  * 
- * Dedicated worker thread for high-frequency threat detection analysis
+ * Dedicated worker thread for high-frequency thre      ...config,
+      latencyBudget: config.latencyBudget ?? 100,
+      analysisFrequency: config.analysisFrequency ?? 500,
+      maxConcurrentAnalyses: config.maxConcurrentAnalyses ?? 10,
+      emergencyThreshold: config.emergencyThreshold ?? 0.8,
+      adaptiveThrottling: config.adaptiveThrottling ?? trueection analysis
  * without blocking the main event loop. Implements explicit latency budgets
  * and validates actual response times.
  * 
@@ -15,52 +20,155 @@
 
 import { Worker, isMainThread, parentPort, workerData } from 'worker_threads';
 import { performance } from 'perf_hooks';
+import { 
+  ThreatDetectionConfig,
+  ThreatAnalysisRequest, 
+  ThreatAnalysisResult,
+  LatencyMeasurement,
+  ThreatAnalysisResultPartial,
+  DEFAULT_CONFIG 
+} from './threat-detection-types';
 
-interface ThreatDetectionConfig {
-  latencyBudget: number;          // Maximum allowed latency in milliseconds
-  analysisFrequency: number;      // How often to perform threat analysis (Hz)
-  maxConcurrentAnalyses: number;  // Maximum concurrent threat analyses
-  emergencyThreshold: number;     // Threat score threshold for emergency response
-  adaptiveThrottling: boolean;    // Enable adaptive throttling
+// Structured logging with severity levels
+class Logger {
+  private prefix: string;
+  private static lastLog = new Map<string, number>();
+  private static RATE_LIMIT_MS = 1000; // 1 second rate limit
+
+  constructor(prefix: string = '[ThreatWorker]') {
+    this.prefix = prefix;
+  }
+
+  private shouldLog(key: string): boolean {
+    const now = Date.now();
+    const lastTime = Logger.lastLog.get(key) || 0;
+    if (now - lastTime < Logger.RATE_LIMIT_MS) return false;
+    Logger.lastLog.set(key, now);
+    return true;
+  }
+
+  info(message: string, data?: any): void {
+    if (this.shouldLog(message)) {
+      console.log(`${this.prefix} ${message}`, data ? JSON.stringify(data) : '');
+    }
+  }
+
+  warn(message: string, data?: any): void {
+    if (this.shouldLog(message)) {
+      console.warn(`${this.prefix} WARNING: ${message}`, data ? JSON.stringify(data) : '');
+    }
+  }
+
+  error(message: string, error?: Error | unknown): void {
+    if (this.shouldLog(message)) {
+      console.error(
+        `${this.prefix} ERROR: ${message}`,
+        error instanceof Error ? {
+          name: error.name,
+          message: error.message,
+          stack: error.stack
+        } : error
+      );
+    }
+  }
+
+  debug(message: string, data?: any): void {
+    if (process.env.NODE_ENV !== 'production' && this.shouldLog(message)) {
+      console.debug(`${this.prefix} DEBUG: ${message}`, data ? JSON.stringify(data) : '');
+    }
+  }
 }
 
-interface ThreatAnalysisRequest {
-  id: string;
-  timestamp: bigint;
-  data: {
-    ipAddress: string;
-    requestPattern: any;
-    userData?: any;
-    securityContext?: any;
-  };
-  priority: 'low' | 'medium' | 'high' | 'emergency';
+// Custom error types
+class ThreatAnalysisError extends Error {
+  constructor(
+    message: string,
+    public readonly code: string,
+    public readonly metadata?: any
+  ) {
+    super(message);
+    this.name = 'ThreatAnalysisError';
+  }
 }
 
-interface ThreatAnalysisResult {
-  requestId: string;
-  threatScore: number;
-  threatType: string[];
-  severity: 'low' | 'medium' | 'high' | 'critical' | 'emergency';
-  responseTime: number;           // Actual response time in milliseconds
-  detectionTime: bigint;          // Nanosecond timestamp of detection
-  mitigationActions: string[];
-  confident: boolean;
-  metadata: any;
+// Input validation utilities
+class ValidationError extends ThreatAnalysisError {
+  constructor(message: string, metadata?: any) {
+    super(message, 'VALIDATION_ERROR', metadata);
+    this.name = 'ValidationError';
+  }
 }
 
-interface LatencyMeasurement {
-  requestId: string;
-  startTime: bigint;
-  endTime: bigint;
-  latency: number;
-  budgetMet: boolean;
-  budgetOverrun: number;
+interface ValidationRule<T> {
+  validate: (value: T) => boolean;
+  message: string;
+}
+
+function validateRequest(request: ThreatAnalysisRequest): void {
+  const rules: ValidationRule<ThreatAnalysisRequest>[] = [
+    {
+      validate: (r) => Boolean(r.id && typeof r.id === 'string'),
+      message: 'Request must have a valid string ID'
+    },
+    {
+      validate: (r) => Boolean(r.timestamp && typeof r.timestamp === 'bigint'),
+      message: 'Request must have a valid bigint timestamp'
+    },
+    {
+      validate: (r) => Boolean(r.data && typeof r.data === 'object'),
+      message: 'Request must have a data object'
+    },
+    {
+      validate: (r) => Boolean(r.data.ipAddress && typeof r.data.ipAddress === 'string'),
+      message: 'Request data must include a valid IP address'
+    },
+    {
+      validate: (r) => ['low', 'medium', 'high', 'emergency'].includes(r.priority),
+      message: 'Request must have a valid priority level'
+    }
+  ];
+
+  for (const rule of rules) {
+    if (!rule.validate(request)) {
+      throw new ValidationError(rule.message, { request });
+    }
+  }
+}
+
+function validateConfig(config: Partial<ThreatDetectionConfig>): void {
+  if (config.latencyBudget !== undefined && (typeof config.latencyBudget !== 'number' || config.latencyBudget <= 0)) {
+    throw new ValidationError('latencyBudget must be a positive number');
+  }
+
+  if (config.analysisFrequency !== undefined && (typeof config.analysisFrequency !== 'number' || config.analysisFrequency <= 0)) {
+    throw new ValidationError('analysisFrequency must be a positive number');
+  }
+
+  if (config.maxConcurrentAnalyses !== undefined && (typeof config.maxConcurrentAnalyses !== 'number' || config.maxConcurrentAnalyses <= 0)) {
+    throw new ValidationError('maxConcurrentAnalyses must be a positive number');
+  }
+
+  if (config.emergencyThreshold !== undefined && (typeof config.emergencyThreshold !== 'number' || config.emergencyThreshold < 0 || config.emergencyThreshold > 1)) {
+    throw new ValidationError('emergencyThreshold must be a number between 0 and 1');
+  }
+}
+
+class LatencyBudgetError extends ThreatAnalysisError {
+  constructor(budget: number, actual: number) {
+    super(
+      `Analysis exceeded ${budget}ms budget (took ${actual}ms)`,
+      'LATENCY_BUDGET_EXCEEDED',
+      { budget, actual }
+    );
+    this.name = 'LatencyBudgetError';
+  }
 }
 
 /**
  * Threat Detection Worker
  * Runs high-frequency threat analysis in dedicated thread
  */
+
 class ThreatDetectionWorker {
   private config: ThreatDetectionConfig;
   private isRunning = false;
@@ -81,15 +189,12 @@ class ThreatDetectionWorker {
   private currentConcurrency = 1;
   private throttleLevel = 0; // 0 = no throttling, 1 = maximum throttling
   
-  constructor(config: ThreatDetectionConfig) {
-    this.config = {
-      latencyBudget: 100,           // 100ms default budget
-      analysisFrequency: 500,       // 500 Hz analysis frequency
-      maxConcurrentAnalyses: 10,    // Max 10 concurrent analyses
-      emergencyThreshold: 0.8,      // 80% threat score triggers emergency
-      adaptiveThrottling: true,
-      ...config
-    };
+  constructor(config: Partial<ThreatDetectionConfig> = {}) {
+    // Validate config
+    validateConfig(config);
+    
+    // Merge with defaults, ensuring only one instance of each property
+    this.config = { ...DEFAULT_CONFIG, ...config };
   }
   
   /**
@@ -121,10 +226,16 @@ class ThreatDetectionWorker {
   /**
    * Process threat analysis request
    */
+  private logger = new Logger();
+
   async analyzeThreat(request: ThreatAnalysisRequest): Promise<ThreatAnalysisResult> {
     const startTime = process.hrtime.bigint();
     
     try {
+      // Validate request
+      validateRequest(request);
+      
+      this.logger.debug('Starting threat analysis', { requestId: request.id });
       // Check if we're within concurrent analysis limits
       if (this.activeAnalyses.size >= this.config.maxConcurrentAnalyses) {
         // Queue the request if we're at capacity
@@ -158,10 +269,15 @@ class ThreatDetectionWorker {
       };
       
     } catch (error) {
-      console.error('[ThreatWorker] Analysis error:', error);
+      this.logger.error('Analysis error', error);
       this.activeAnalyses.delete(request.id);
       
-      // Return safe default result
+      // Ensure error is properly typed and propagated
+      const analysisError = error instanceof ThreatAnalysisError ? error : 
+        error instanceof Error ? new ThreatAnalysisError(error.message, 'ANALYSIS_FAILED', { originalError: error }) :
+        new ThreatAnalysisError('Unknown analysis error', 'UNKNOWN_ERROR', { error });
+      
+      // Return safe default result with error information
       return {
         requestId: request.id,
         threatScore: 0,
@@ -171,7 +287,7 @@ class ThreatDetectionWorker {
         detectionTime: process.hrtime.bigint(),
         mitigationActions: [],
         confident: false,
-        metadata: { error: error.message }
+        metadata: { error: error instanceof Error ? error.message : String(error) }
       };
     }
   }
@@ -182,13 +298,18 @@ class ThreatDetectionWorker {
   private async performThreatAnalysis(
     request: ThreatAnalysisRequest, 
     startTime: bigint
-  ): Promise<Omit<ThreatAnalysisResult, 'responseTime' | 'detectionTime'>> {
+  ): Promise<ThreatAnalysisResultPartial> {
     
     // Implement time-boxed analysis to enforce latency budget
-    const budgetPromise = new Promise<ThreatAnalysisResult>((resolve, reject) => {
+    return new Promise<ThreatAnalysisResultPartial>((resolve, reject) => {
       const timeoutId = setTimeout(() => {
-        reject(new Error(`Analysis exceeded ${this.config.latencyBudget}ms budget`));
+        reject(new LatencyBudgetError(this.config.latencyBudget, this.config.latencyBudget));
       }, this.config.latencyBudget);
+      
+      this.logger.debug('Starting analysis with budget', { 
+        budget: this.config.latencyBudget,
+        requestId: request.id 
+      });
       
       // Perform analysis
       this.doThreatAnalysis(request).then((result) => {
@@ -199,14 +320,12 @@ class ThreatDetectionWorker {
         reject(error);
       });
     });
-    
-    return await budgetPromise;
   }
   
   /**
    * Core threat analysis logic
    */
-  private async doThreatAnalysis(request: ThreatAnalysisRequest): Promise<Omit<ThreatAnalysisResult, 'responseTime' | 'detectionTime'>> {
+  private async doThreatAnalysis(request: ThreatAnalysisRequest): Promise<ThreatAnalysisResultPartial> {
     const { data } = request;
     let threatScore = 0;
     const threatTypes: string[] = [];
@@ -498,9 +617,25 @@ if (!isMainThread && parentPort) {
             data: result 
           });
         } catch (error) {
+          const analysisError = error instanceof ThreatAnalysisError ? error :
+            new ThreatAnalysisError(
+              error instanceof Error ? error.message : 'Unknown error',
+              'ANALYSIS_FAILED',
+              { originalError: error }
+            );
+
+          console.error('[ThreatWorker] Worker thread analysis error:', analysisError);
+          
           parentPort!.postMessage({ 
             type: 'threat_analysis_error', 
-            data: { requestId: message.data.id, error: error.message } 
+            data: { 
+              requestId: message.data.id, 
+              error: {
+                code: analysisError.code,
+                message: analysisError.message,
+                metadata: analysisError.metadata
+              }
+            } 
           });
         }
         break;
@@ -526,4 +661,5 @@ if (!isMainThread && parentPort) {
   console.log('[ThreatWorker] Worker ready for threat analysis');
 }
 
-export { ThreatDetectionWorker, ThreatDetectionConfig, ThreatAnalysisRequest, ThreatAnalysisResult };
+export { ThreatDetectionWorker };
+export type { ThreatDetectionConfig, ThreatAnalysisRequest, ThreatAnalysisResult };

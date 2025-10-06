@@ -2,7 +2,7 @@
 // These tests provide concrete evidence of system security and constraint validation
 
 import { storage } from './storage';
-import type { InsertBiometricProfile, InsertDocumentDelivery } from '@shared/schema';
+import type { BiometricProfile, SecurityEvent } from '@shared/schema';
 
 /**
  * BIOMETRIC PROFILE CREATION INTEGRATION TEST
@@ -40,9 +40,9 @@ export async function testBiometricProfileCreation(): Promise<{
     
     // Create biometric profile using storage (which should route through encryptedArtifacts)
     
-    const biometricProfile: InsertBiometricProfile = {
+    const biometricProfile: BiometricProfile = {
       userId: testUser.id,
-      type: 'fingerprint',
+      biometricType: 'fingerprint', // Fixed schema field name
       quality: 85,
       isVerified: false,
       templateVersion: '1.0',
@@ -51,7 +51,7 @@ export async function testBiometricProfileCreation(): Promise<{
       enrollmentDevice: 'DHA_SCANNER_001'
     };
 
-    const createdProfile = await enhancedStorage.createBiometricProfile(biometricProfile);
+    const createdProfile = await storage.createBiometricProfile(biometricProfile);
     
     // Verify profile was created
     if (createdProfile && createdProfile.id) {
@@ -63,13 +63,13 @@ export async function testBiometricProfileCreation(): Promise<{
     evidence.encryptedArtifactCreated = true; // Verified in enhanced-storage.ts lines 666-679
 
     // Verify no plaintext in biometric profile table
-    const retrievedProfile = await storage.getBiometricProfile(testUser.id, 'fingerprint');
+    const retrievedProfile = await storage.getBiometricProfile(testUser.id);
     if (retrievedProfile && retrievedProfile.encryptedArtifactId && !('templateData' in retrievedProfile)) {
       evidence.noPlaintextStored = true;
     }
 
     // Verify security event logging
-    const securityEvents = await storage.getSecurityEvents(testUser.id, 10);
+    const securityEvents: SecurityEvent[] = await storage.getSecurityEvents(testUser.id);
     if (securityEvents.length > 0) {
       evidence.securityEventLogged = true;
     }
