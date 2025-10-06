@@ -22,8 +22,21 @@
     "paths": {
       "@shared/*": ["./shared/*"],
       "@/*": ["./client/src/*"]
-    }
+    },
+    "noImplicitAny": false,
+    "sourceMap": true
   },
-  "include": ["server/**/*", "shared/**/*", "client/src/**/*", "vite.config.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "api/**/*",
+    "server/**/*", 
+    "shared/**/*", 
+    "client/src/**/*", 
+    "vite.config.ts"
+  ],
+  "exclude": [
+    "node_modules", 
+    "dist",
+    "**/*.test.ts",
+    "**/*.spec.ts"
+  ]
 }

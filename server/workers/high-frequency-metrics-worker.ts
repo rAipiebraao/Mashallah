@@ -73,11 +73,15 @@ class HighFrequencyMetricsWorker {
   private readonly OVERHEAD_WINDOW_SIZE = 100;
   
   constructor(config: WorkerConfig) {
-    this.config = {
+    const defaultConfig = {
       targetFrequency: 1000,
       maxOverhead: 0.1, // 10% max CPU overhead
       adaptiveThrottling: true,
-      validationEnabled: true,
+      validationEnabled: true
+    };
+    
+    this.config = {
+      ...defaultConfig,
       ...config
     };
     
@@ -350,4 +354,6 @@ if (!isMainThread && parentPort) {
   console.log('[MetricsWorker] Worker ready for commands');
 }
 
-export { HighFrequencyMetricsWorker, WorkerConfig, MetricsSample, SHARED_BUFFER_INDICES };
+export { HighFrequencyMetricsWorker };
+export type { WorkerConfig, MetricsSample };
+export { SHARED_BUFFER_INDICES };
